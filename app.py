@@ -166,7 +166,7 @@ class Search:
     def __init__(self):
         self.running=False; self.stopped=False; self.reason=''; self.error=''; self.last=None; self.task=None
         self.durable=False; self.checkpoint_error=''
-        self.persisted_zeros=0; self.persisted_last=None; self.persisted_candidate=None
+        self.persisted_zeros=0; self.persisted_last=None; self.persisted_candidate=None; self.persisted_paused=False
 
     async def initialize(self):
         payload, info=await asyncio.to_thread(load_checkpoint)
@@ -175,6 +175,7 @@ class Search:
             self.persisted_zeros=int(payload.get('zeros_checked',0))
             self.persisted_last=payload.get('last_zero')
             self.persisted_candidate=payload.get('candidate')
+            self.persisted_paused=bool(payload.get('paused',False))
             if payload.get('candidate'):
                 self.stopped=True; self.reason=payload.get('reason','A candidate was previously recorded.'); self.running=False
             self.last=self.persisted_last
@@ -189,14 +190,16 @@ class Search:
     def status(self):
         return {'running':self.running,'stopped':self.stopped,'reason':self.reason,'error':self.error,'next_n':int(state('next_n','1')),'zeros_checked':max(count('zeros'),self.persisted_zeros),'candidate_count':count('candidates') + (1 if self.persisted_candidate and count('candidates')==0 else 0),'search_dps':SEARCH_DPS,'verify_dps':VERIFY_DPS,'last_zero':self.last or self.persisted_last,'candidate':latest('candidates') or self.persisted_candidate,'report':latest('reports'),'durable_checkpoint':self.durable,'checkpoint_error':self.checkpoint_error}
 
-    async def persist(self, force=False, candidate=None, stopped=False, reason=''):
+    async def persist(self, force=False, candidate=None, stopped=False, reason='', paused=None):
         n=int(state('next_n','1')); z=max(count('zeros'),self.persisted_zeros)
         last=self.last or self.persisted_last
         cand=candidate if candidate is not None else (latest('candidates') or self.persisted_candidate)
         if not force and n % CHECKPOINT_EVERY != 0: return
-        ok,err=await asyncio.to_thread(save_checkpoint,checkpoint_payload(n,z,last,cand,stopped,reason))
+        if paused is None: paused = False if self.running else (stopped or reason == 'Manually stopped')
+        payload = checkpoint_payload(n,z,last,cand,stopped,reason); payload['paused']=bool(paused)
+        ok,err=await asyncio.to_thread(save_checkpoint,payload)
         if ok:
-            self.durable=True; self.checkpoint_error=''; self.persisted_zeros=z; self.persisted_last=last; self.persisted_candidate=cand
+            self.durable=True; self.checkpoint_error=''; self.persisted_zeros=z; self.persisted_last=last; self.persisted_candidate=cand; self.persisted_paused=bool(paused)
         else:
             self.checkpoint_error=err
 
@@ -204,16 +207,16 @@ class Search:
         if self.running:return
         if self.persisted_candidate or latest('candidates') is not None:
             self.stopped=True; self.reason='A verified candidate already exists; start is disabled for this run.'; return
-        self.stopped=False; self.reason=''; self.error=''; self.running=True; self.task=asyncio.create_task(self.run())
+        self.stopped=False; self.reason=''; self.error=''; self.persisted_paused=False; self.running=True; self.task=asyncio.create_task(self.run())
 
     async def stop(self,reason='Manually stopped'):
         self.running=False; self.stopped=False; self.reason=reason
-        await self.persist(force=True,stopped=False,reason=reason)
+        await self.persist(force=True,stopped=False,reason=reason,paused=True)
 
     async def candidate(self,source,s,res,dev,extra):
         e={'source':source,'real_part':mp.nstr(s.real,VERIFY_DPS),'imaginary_part':mp.nstr(s.imag,VERIFY_DPS),'zeta_abs':mp.nstr(res,70),'critical_line_deviation':mp.nstr(dev,70),'search_precision_digits':SEARCH_DPS,'verification_precision_digits':VERIFY_DPS,'extra':extra,'timestamp_utc':now()}
         cid=addcandidate(source,s,res,dev,e); self.persisted_candidate=e; self.running=False; self.stopped=True; self.reason='A numerically verified nontrivial zero candidate has Re(s) != 1/2.'
-        await self.persist(force=True,candidate=e,stopped=True,reason=self.reason)
+        await self.persist(force=True,candidate=e,stopped=True,reason=self.reason,paused=False)
         try:addreport(cid,await asyncio.to_thread(ai_report,e))
         except Exception as ex:self.error=f'AI report generation failed: {type(ex).__name__}: {ex}'
 
@@ -224,7 +227,7 @@ class Search:
                 for n in range(start,start+BATCH):
                     if not self.running:return
                     if MAX_N and n>MAX_N:
-                        self.running=False; self.stopped=False; self.reason=f'Configured maximum n={MAX_N} reached.'; await self.persist(force=True,reason=self.reason); return
+                        self.running=False; self.stopped=False; self.reason=f'Configured maximum n={MAX_N} reached.'; await self.persist(force=True,reason=self.reason,paused=True); return
                     with mp.workdps(SEARCH_DPS): s=mp.zetazero(n); sr=abs(mp.zeta(s))
                     vr,root,dev=verify(s); verified=mp.im(root)>10 and 0<mp.re(root)<1 and vr<mp.mpf('1e-50'); suspicious=dev>FINAL
                     addzero(n,root,sr,vr,dev,verified,suspicious); setstate('next_n',n+1)
@@ -240,7 +243,7 @@ class Search:
                     await asyncio.sleep(INTERVAL)
         except asyncio.CancelledError: pass
         except Exception as ex:
-            self.running=False; self.stopped=False; self.reason='Search paused because of an execution error.'; self.error=repr(ex); await self.persist(force=True,reason=self.reason)
+            self.running=False; self.stopped=False; self.reason='Search paused because of an execution error.'; self.error=repr(ex); await self.persist(force=True,reason=self.reason,paused=True)
 
 
 init(); search=Search(); app=FastAPI(title='Riemann Hypothesis Search Lab')
@@ -248,7 +251,7 @@ init(); search=Search(); app=FastAPI(title='Riemann Hypothesis Search Lab')
 @app.on_event('startup')
 async def startup():
     await search.initialize()
-    if os.getenv('RH_AUTO_START','true').lower() not in {'0','false','no'} and not search.stopped: await search.start()
+    if os.getenv('RH_AUTO_START','true').lower() not in {'0','false','no'} and not search.stopped and not search.persisted_paused: await search.start()
 
 @app.get('/',response_class=HTMLResponse)
 async def home(): return HTML
