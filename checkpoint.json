@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "next_n": 1,
+  "zeros_checked": 0,
+  "last_zero": null,
+  "candidate": null,
+  "stopped": false,
+  "reason": "",
+  "updated_at_utc": null
+}
