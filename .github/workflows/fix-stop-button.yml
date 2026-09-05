@@ -1,8 +1,9 @@
-name: Fix stop button responsiveness
+name: Patch stop button
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -11,18 +12,13 @@ jobs:
   patch:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Patch stop behavior
+      - uses: actions/checkout@v4
+      - name: Patch app.py
+        shell: python
         run: |
-          python <<'PY'
           from pathlib import Path
-          import re
-
           p = Path('app.py')
           s = p.read_text(encoding='utf-8')
-
           old = '''    async def stop(self):
         self.running = False
         self.stopped = True
@@ -37,8 +33,6 @@ jobs:
             self.reason = "Already stopped"
             setstate("phase", "stopped")
             return
-        # Request a safe stop. The current FLINT native operation is allowed to finish,
-        # but no new zero/verification operation will start afterward.
         self.reason = "Stopping safely after the current numerical operation..."
         setstate("phase", "stopping")
         self.running = False
@@ -48,40 +42,18 @@ jobs:
 '''
           if old in s:
               s = s.replace(old, new, 1)
-          elif 'Stopping safely after the current numerical operation...' not in s:
-              raise SystemExit('Could not find Search.stop() block')
-
-          old_js = '''async function stopSearch(){try{render(await(await fetch('/api/stop',{method:'POST'})).json())}catch(e){$('error').textContent=String(e)}}'''
-          new_js = '''async function stopSearch(){
-            const button=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Stop'));
-            if(button){button.disabled=true;button.textContent='■ Stopping…';}
-            try{
-              const r=await fetch('/api/stop',{method:'POST',cache:'no-store'});
-              render(await r.json());
-            }catch(e){$('error').textContent=String(e);}
-            finally{if(button){button.disabled=false;button.textContent='■ Stop & Save';}}
-          }'''
+          old_js = "async function stopSearch(){try{render(await(await fetch('/api/stop',{method:'POST'})).json())}catch(e){$('error').textContent=String(e)}}"
+          new_js = '''async function stopSearch(){const button=[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Stop'));if(button){button.disabled=true;button.textContent='■ Stopping…';}try{const r=await fetch('/api/stop',{method:'POST',cache:'no-store'});render(await r.json());}catch(e){$('error').textContent=String(e);}finally{if(button){button.disabled=false;button.textContent='■ Stop & Save';}}}'''
           if old_js in s:
               s = s.replace(old_js, new_js, 1)
-          elif 'button.textContent=\'■ Stopping…\'' not in s:
-              raise SystemExit('Could not find stopSearch() block')
-
           old_phase = "if(p==='stopped')return'Stopped and saved';"
           new_phase = "if(p==='stopping')return'Stopping safely…';if(p==='stopped')return'Stopped and saved';"
-          if old_phase in s and new_phase not in s:
+          if old_phase in s:
               s = s.replace(old_phase, new_phase, 1)
-
           p.write_text(s, encoding='utf-8')
-          PY
-
-      - name: Commit patched app
+      - name: Commit patch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add app.py
-          if git diff --cached --quiet; then
-            echo 'No patch needed.'
-          else
-            git commit -m 'Make stop button responsive and safe'
-            git push
-          fi
+          git diff --cached --quiet || (git commit -m 'Fix stop button responsiveness' && git push)
