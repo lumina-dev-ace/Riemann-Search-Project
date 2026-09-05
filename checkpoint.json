@@ -1,6 +1,8 @@
 {
-  "next_n": 201,
-  "zeros_checked": 200,
-  "updated_at_utc": "2026-09-05T10:55:02.571238+00:00",
-  "paused": false
+  "next_n": 10000000000001,
+  "zeros_checked": 0,
+  "updated_at_utc": "2026-09-05T16:30:00+05:30",
+  "paused": true,
+  "search_start_n": 10000000000001,
+  "reset_reason": "Fresh run: begin after the first 10 trillion nontrivial zeros"
 }
