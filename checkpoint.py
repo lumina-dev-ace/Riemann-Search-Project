@@ -26,33 +26,65 @@ async def save_checkpoint(data):
         r=await c.put(URL,headers=headers,json=body);r.raise_for_status();return True
 
 # Patch the already-created Search instance after app.py finishes importing.
-# This avoids killing a native FLINT operation mid-calculation: the stop request
-# flips the run flag immediately, while the current to_thread operation finishes safely.
-def _install_safe_stop():
-    for _ in range(120):
+# Stop requests never kill a native FLINT operation. The running flag changes
+# immediately and the current worker returns at its next safe boundary.
+def _install_patches():
+    for _ in range(240):
         mod=sys.modules.get('app')
         if mod is not None and getattr(mod,'search',None) is not None:
             obj=mod.search
-            if getattr(obj,'_safe_stop_installed',False): return
-            async def safe_stop(self):
-                if not self.running:
+            if not getattr(obj,'_checkpoint_patches_installed',False):
+                original_start=obj.start
+
+                async def persistent_start(self):
+                    await original_start()
+                    # A successful Start means the user's intent is RUNNING.
+                    # Persist that intent so a Render restart can resume it.
+                    if self.running:
+                        try:
+                            await mod.checkpoint(False, {'auto_resume': True})
+                        except Exception:
+                            pass
+
+                async def safe_stop(self):
+                    if not self.running:
+                        self.stopped=True
+                        self.reason='Already stopped'
+                        try: mod.setstate('phase','stopped')
+                        except Exception: pass
+                        return
+                    self.reason='Stopping safely after the current numerical operation...'
+                    try: mod.setstate('phase','stopping')
+                    except Exception: pass
+                    self.running=False
                     self.stopped=True
-                    self.reason='Already stopped'
+                    try: await mod.checkpoint(True, {'auto_resume': False})
+                    except Exception: pass
                     try: mod.setstate('phase','stopped')
                     except Exception: pass
-                    return
-                self.reason='Stopping safely after the current numerical operation...'
-                try: mod.setstate('phase','stopping')
-                except Exception: pass
-                self.running=False
-                self.stopped=True
-                try: await mod.checkpoint(True)
-                except Exception: pass
-                try: mod.setstate('phase','stopped')
-                except Exception: pass
-            obj.stop=types.MethodType(safe_stop,obj)
-            obj._safe_stop_installed=True
-            return
+
+                obj.start=types.MethodType(persistent_start,obj)
+                obj.stop=types.MethodType(safe_stop,obj)
+                obj._checkpoint_patches_installed=True
+
+                # Register startup logic after FastAPI has been created. If the
+                # last checkpoint says the search was intentionally running,
+                # resume it automatically after any Render process restart.
+                app_obj=getattr(mod,'app',None)
+                if app_obj is not None and not getattr(app_obj,'_auto_resume_handler_installed',False):
+                    async def auto_resume():
+                        try:
+                            cp=await load_checkpoint()
+                            if (cp and cp.get('paused') is False
+                                    and not getattr(obj,'running',False)
+                                    and getattr(obj,'_safe_resume_allowed',True)
+                                    and mod.latest('candidates') is None):
+                                await obj.start()
+                        except Exception as ex:
+                            obj.error=f'Auto-resume failed: {type(ex).__name__}: {ex}'
+                    app_obj.add_event_handler('startup',auto_resume)
+                    app_obj._auto_resume_handler_installed=True
+                return
         time.sleep(0.05)
 
-threading.Thread(target=_install_safe_stop,daemon=True).start()
+threading.Thread(target=_install_patches,daemon=True).start()
