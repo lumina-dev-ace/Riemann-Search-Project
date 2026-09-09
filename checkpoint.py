@@ -31,8 +31,9 @@ async def save_checkpoint(data):
 def _install_patches():
     for _ in range(240):
         mod=sys.modules.get('app')
-        if mod is not None and getattr(mod,'search',None) is not None:
-            obj=mod.search
+        obj=getattr(mod,'search',None) if mod is not None else None
+        app_obj=getattr(mod,'app',None) if mod is not None else None
+        if mod is not None and obj is not None and app_obj is not None:
             if not getattr(obj,'_checkpoint_patches_installed',False):
                 original_start=obj.start
 
@@ -67,24 +68,20 @@ def _install_patches():
                 obj.stop=types.MethodType(safe_stop,obj)
                 obj._checkpoint_patches_installed=True
 
-                # Register startup logic after FastAPI has been created. If the
-                # last checkpoint says the search was intentionally running,
-                # resume it automatically after any Render process restart.
-                app_obj=getattr(mod,'app',None)
-                if app_obj is not None and not getattr(app_obj,'_auto_resume_handler_installed',False):
-                    async def auto_resume():
-                        try:
-                            cp=await load_checkpoint()
-                            if (cp and cp.get('paused') is False
-                                    and not getattr(obj,'running',False)
-                                    and getattr(obj,'_safe_resume_allowed',True)
-                                    and mod.latest('candidates') is None):
-                                await obj.start()
-                        except Exception as ex:
-                            obj.error=f'Auto-resume failed: {type(ex).__name__}: {ex}'
-                    app_obj.add_event_handler('startup',auto_resume)
-                    app_obj._auto_resume_handler_installed=True
-                return
+            if not getattr(app_obj,'_auto_resume_handler_installed',False):
+                async def auto_resume():
+                    try:
+                        cp=await load_checkpoint()
+                        if (cp and cp.get('paused') is False
+                                and not getattr(obj,'running',False)
+                                and getattr(obj,'_safe_resume_allowed',True)
+                                and mod.latest('candidates') is None):
+                            await obj.start()
+                    except Exception as ex:
+                        obj.error=f'Auto-resume failed: {type(ex).__name__}: {ex}'
+                app_obj.add_event_handler('startup',auto_resume)
+                app_obj._auto_resume_handler_installed=True
+            return
         time.sleep(0.05)
 
 threading.Thread(target=_install_patches,daemon=True).start()
