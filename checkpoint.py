@@ -25,9 +25,10 @@ async def save_checkpoint(data):
         if sha:body['sha']=sha
         r=await c.put(URL,headers=headers,json=body);r.raise_for_status();return True
 
-# Patch the already-created Search instance after app.py finishes importing.
-# Stop requests never kill a native FLINT operation. The running flag changes
-# immediately and the current worker returns at its next safe boundary.
+# Install small runtime patches after app.py has created the Search instance.
+# Start must return immediately to the browser; checkpointing is fire-and-forget.
+# Stop changes the running flag immediately and lets the current native FLINT
+# operation finish at a safe boundary.
 def _install_patches():
     for _ in range(240):
         mod=sys.modules.get('app')
@@ -37,15 +38,18 @@ def _install_patches():
             if not getattr(obj,'_checkpoint_patches_installed',False):
                 original_start=obj.start
 
+                async def persist_running_intent():
+                    try:
+                        await mod.checkpoint(False, {'auto_resume': True})
+                    except Exception as ex:
+                        try: obj.error=f'Initial checkpoint failed: {type(ex).__name__}: {ex}'
+                        except Exception: pass
+
                 async def persistent_start(self):
                     await original_start()
-                    # A successful Start means the user's intent is RUNNING.
-                    # Persist that intent so a Render restart can resume it.
                     if self.running:
-                        try:
-                            await mod.checkpoint(False, {'auto_resume': True})
-                        except Exception:
-                            pass
+                        # Do not make the Start HTTP request wait on GitHub.
+                        asyncio.create_task(persist_running_intent())
 
                 async def safe_stop(self):
                     if not self.running:
@@ -59,8 +63,11 @@ def _install_patches():
                     except Exception: pass
                     self.running=False
                     self.stopped=True
-                    try: await mod.checkpoint(True, {'auto_resume': False})
-                    except Exception: pass
+                    # Save the stop intent without blocking the UI on the GitHub request.
+                    async def save_stop():
+                        try: await mod.checkpoint(True, {'auto_resume': False})
+                        except Exception: pass
+                    asyncio.create_task(save_stop())
                     try: mod.setstate('phase','stopped')
                     except Exception: pass
 
