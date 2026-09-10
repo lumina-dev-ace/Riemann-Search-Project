@@ -1,7 +1,7 @@
 {
-  "next_n": 10000000000026,
-  "zeros_checked": 1,
-  "updated_at_utc": "2026-09-08T15:37:52.099346+00:00",
-  "paused": true,
+  "next_n": 10000000000058,
+  "zeros_checked": 32,
+  "updated_at_utc": "2026-09-10T15:23:31.763396+00:00",
+  "paused": false,
   "search_start_n": 10000000000001
 }
