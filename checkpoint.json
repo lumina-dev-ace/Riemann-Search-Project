@@ -1,8 +1,8 @@
 {
   "next_n": 10000000000058,
   "zeros_checked": 32,
-  "updated_at_utc": "2026-09-11T13:29:29.071439+00:00",
-  "paused": false,
+  "updated_at_utc": "2026-09-11T13:52:50.387968+00:00",
+  "paused": true,
   "search_start_n": 10000000000001,
-  "dashboard_start_requested": true
+  "dashboard_stop_requested": true
 }
